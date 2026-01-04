@@ -71,7 +71,7 @@ class S3fsCred
         time_t              AWSAccessTokenExpire GUARDED_BY(token_lock);
 
         bool                is_ecs;
-        bool                is_use_session_token;
+        bool                is_use_session_token GUARDED_BY(token_lock);
         bool                is_ibm_iam_auth;
 
         std::string         IAM_cred_url;
@@ -85,6 +85,9 @@ class S3fsCred
         bool                set_builtin_cred_opts;  // true if options other than "credlib" is set
         std::string         credlib;                // credlib(name or path)
         std::string         credlib_opts;           // options for credlib
+
+        std::string         dynamic_cred_file;      // dynamic credential file path
+        bool                is_use_dynamic_cred_file;  // true if dynamic credential file mode is enabled
 
         void*                    hExtCredLib;
         fp_VersionS3fsCredential pFuncCredVersion;
@@ -109,6 +112,9 @@ class S3fsCred
         bool SetAccessKey(const char* AccessKeyId, const char* SecretAccessKey) REQUIRES(S3fsCred::token_lock);
         bool SetAccessKeyWithSessionToken(const char* AccessKeyId, const char* SecretAccessKey, const char * SessionToken) REQUIRES(S3fsCred::token_lock);
         bool IsSetAccessKeys() const REQUIRES(S3fsCred::token_lock);
+
+        bool IsReadableDynamicCredFile() const;
+        bool ReadDynamicCredFile(std::string& access_key_id, std::string& secret_access_key, std::string& session_token) REQUIRES(S3fsCred::token_lock);
 
         bool SetIsECS(bool flag);
         bool SetIsUseSessionToken(bool flag);

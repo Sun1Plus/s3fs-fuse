@@ -186,6 +186,8 @@ S3fsCred::S3fsCred() :
     IAM_token_field("Token"),
     IAM_expiry_field("Expiration"),
     set_builtin_cred_opts(false),
+    dynamic_cred_file(""),
+    is_use_dynamic_cred_file(false),
     hExtCredLib(nullptr),
     pFuncCredVersion(VersionS3fsCredential),
     pFuncCredInit(InitS3fsCredential),
@@ -1055,6 +1057,112 @@ bool S3fsCred::InitialS3fsCredentials()
 }
 
 //-------------------------------------------------------------------
+// Methods : for Dynamic Credential File
+//-------------------------------------------------------------------
+//
+// Check if dynamic credential file is readable
+//
+bool S3fsCred::IsReadableDynamicCredFile() const
+{
+    if(dynamic_cred_file.empty()){
+        return false;
+    }
+    std::ifstream PF(dynamic_cred_file.c_str());
+    if(!PF.good() || !PF.is_open()){
+        return false;
+    }
+    PF.close();
+    return true;
+}
+
+//
+// Read dynamic credential file
+// Parses AWS credential file format (INI style)
+// Returns true if credentials were successfully loaded
+//
+bool S3fsCred::ReadDynamicCredFile(std::string& access_key_id, std::string& secret_access_key, std::string& session_token)
+{
+    std::ifstream PF(dynamic_cred_file.c_str());
+    if(!PF.good() || !PF.is_open()){
+        S3FS_PRN_ERR("Failed to open dynamic credential file: %s", dynamic_cred_file.c_str());
+        return false;
+    }
+
+    std::string current_profile;
+    std::string target_profile = aws_profile;  // Use the profile specified by --profile option
+    bool found_target = false;
+
+    // Reset output parameters
+    access_key_id.clear();
+    secret_access_key.clear();
+    session_token.clear();
+
+    std::string line;
+    while(getline(PF, line)){
+        // Trim whitespace
+        line = trim(line);
+
+        // Skip empty lines and comments
+        if(line.empty() || line[0] == '#' || line[0] == ';'){
+            continue;
+        }
+
+        // Check for profile section: [profile_name]
+        if(line.size() > 2 && line[0] == '[' && line[line.size() - 1] == ']'){
+            current_profile = line.substr(1, line.size() - 2);
+            if(current_profile == target_profile){
+                found_target = true;
+            } else if(found_target){
+                // Already finished reading target profile, stop parsing
+                break;
+            }
+            continue;
+        }
+
+        // Only parse content within the target profile
+        if(!found_target || current_profile != target_profile){
+            continue;
+        }
+
+        // Parse key=value
+        size_t pos = line.find_first_of('=');
+        if(pos == std::string::npos){
+            continue;
+        }
+
+        std::string key   = trim(line.substr(0, pos));
+        std::string value = trim(line.substr(pos + 1));
+
+        // If value contains comment (starting with # or ;), truncate it
+        size_t comment_pos = value.find_first_of("#;");
+        if(comment_pos != std::string::npos){
+            value = trim(value.substr(0, comment_pos));
+        }
+
+        if(key == "aws_access_key_id"){
+            access_key_id = value;
+        } else if(key == "aws_secret_access_key"){
+            secret_access_key = value;
+        } else if(key == "aws_session_token"){
+            session_token = value;
+        } else if(key == "aws_security_token"){
+            // Alternative name for session token (AWS compatibility)
+            session_token = value;
+        }
+    }
+    PF.close();
+
+    // Validate required fields
+    if(access_key_id.empty() || secret_access_key.empty()){
+        S3FS_PRN_ERR("Incomplete credentials in file: %s (profile: %s)", dynamic_cred_file.c_str(), target_profile.c_str());
+        return false;
+    }
+
+    S3FS_PRN_INFO3("Loaded dynamic credentials from: %s (profile: %s)", dynamic_cred_file.c_str(), target_profile.c_str());
+    return true;
+}
+
+//-------------------------------------------------------------------
 // Methods : for IAM
 //-------------------------------------------------------------------
 bool S3fsCred::ParseIAMCredentialResponse(const char* response, iamcredmap_t& keyval) const
@@ -1116,6 +1224,34 @@ bool S3fsCred::CheckIAMCredentialUpdate(std::string* access_key_id, std::string*
 {
     const std::lock_guard<std::mutex> lock(token_lock);
 
+    // Dynamic credential file mode: read file every use
+    if(is_use_dynamic_cred_file){
+        S3FS_PRN_DBG("Loading dynamic credentials from file");
+
+        std::string loaded_key;
+        std::string loaded_secret;
+        std::string loaded_token;
+
+        if(!ReadDynamicCredFile(loaded_key, loaded_secret, loaded_token)){
+            S3FS_PRN_ERR("Failed to read dynamic credential file");
+            return false;
+        }
+
+        // Update internal credentials
+        AWSAccessKeyId     = loaded_key;
+        AWSSecretAccessKey = loaded_secret;
+        AWSAccessToken     = loaded_token;
+        is_use_session_token = !loaded_token.empty();
+
+        // Return credentials
+        if(access_key_id)    *access_key_id    = AWSAccessKeyId;
+        if(secret_access_key)*secret_access_key= AWSSecretAccessKey;
+        if(access_token)     *access_token     = AWSAccessToken;
+
+        return true;
+    }
+
+    // Existing credential update logic
     if(IsIBMIAMAuth() || IsSetExtCredLib() || is_ecs || IsSetIAMRole()){
         if(AWSAccessTokenExpire < (time(nullptr) + S3fsCred::IAM_EXPIRE_MERGING)){
             S3FS_PRN_INFO("IAM Access Token refreshing...");
@@ -1379,6 +1515,20 @@ int S3fsCred::DetectParam(const char* arg)
         return -1;
     }
 
+    // Dynamic credential file option
+    if(is_prefix(arg, "dynamic_cred_file=")){
+        const char* file_path = strchr(arg, '=') + sizeof(char);
+        if(!file_path || '\0' == file_path[0]){
+            S3FS_PRN_EXIT("option dynamic_cred_file requires a file path");
+            return -1;
+        }
+        dynamic_cred_file = file_path;
+        is_use_dynamic_cred_file = true;
+        set_builtin_cred_opts = true;
+        S3FS_PRN_INFO("Dynamic credential file mode enabled: %s", dynamic_cred_file.c_str());
+        return 0;
+    }
+
     if(is_prefix(arg, "passwd_file=")){
         SetS3fsPasswdFile(strchr(arg, '=') + sizeof(char));
         set_builtin_cred_opts = true;
@@ -1570,7 +1720,7 @@ bool S3fsCred::CheckAllParams()
     // no other Credential related options can be specified. It is exclusive.
     //
     if(set_builtin_cred_opts && (IsSetExtCredLib() || IsSetExtCredLibOpts())){
-        S3FS_PRN_EXIT("The \"credlib\" or \"credlib_opts\" option and other credential-related options(passwd_file, iam_role, profile, use_session_token, ecs, imdsv1only, ibm_iam_auth, ibm_iam_endpoint, etc) cannot be specified together.");
+        S3FS_PRN_EXIT("The \"credlib\" or \"credlib_opts\" option and other credential-related options(passwd_file, iam_role, profile, use_session_token, ecs, imdsv1only, ibm_iam_auth, ibm_iam_endpoint, dynamic_cred_file, etc) cannot be specified together.");
         return false;
     }
 
@@ -1586,6 +1736,48 @@ bool S3fsCred::CheckAllParams()
              return false;
         }
         S3FS_PRN_INFO("Loaded External Credential Library:\n%s", GetCredFuncVersion(true));
+    }
+
+    // check Dynamic Credential File mode
+    //
+    // [NOTE]
+    // Dynamic credential file mode is exclusive with other credential modes
+    //
+    if(is_use_dynamic_cred_file){
+        if(IsSetExtCredLib()){
+            S3FS_PRN_EXIT("Option 'dynamic_cred_file' cannot be used with 'credlib'");
+            return false;
+        }
+        if(IsIBMIAMAuth()){
+            S3FS_PRN_EXIT("Option 'dynamic_cred_file' cannot be used with 'ibm_iam_auth'");
+            return false;
+        }
+        if(is_ecs){
+            S3FS_PRN_EXIT("Option 'dynamic_cred_file' cannot be used with 'ecs'");
+            return false;
+        }
+        if(IsSetIAMRole()){
+            S3FS_PRN_EXIT("Option 'dynamic_cred_file' cannot be used with 'iam_role'");
+            return false;
+        }
+        if(!passwd_file.empty()){
+            S3FS_PRN_EXIT("Option 'dynamic_cred_file' cannot be used with 'passwd_file'");
+            return false;
+        }
+
+        // Validate file readability
+        if(!IsReadableDynamicCredFile()){
+            S3FS_PRN_EXIT("Dynamic credential file '%s' is not readable", dynamic_cred_file.c_str());
+            return false;
+        }
+
+        // Initial read validation
+        std::string test_key, test_secret, test_token;
+        if(!ReadDynamicCredFile(test_key, test_secret, test_token)){
+            S3FS_PRN_EXIT("Failed to load credentials from dynamic credential file '%s'", dynamic_cred_file.c_str());
+            return false;
+        }
+        S3FS_PRN_INFO("Dynamic credential file mode successfully initialized with file: %s (profile: %s)", dynamic_cred_file.c_str(), aws_profile.c_str());
     }
 
     return true;
