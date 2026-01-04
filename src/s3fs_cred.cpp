@@ -438,29 +438,42 @@ bool S3fsCred::LoadIAMCredentials()
     std::string stribmsecret;
     std::string cred;
 
+    S3FS_PRN_INFO("[LOAD_IAM_CRED] === LoadIAMCredentials Called ===");
+    S3FS_PRN_INFO("[LOAD_IAM_CRED] IsIBMIAMAuth: %s", IsIBMIAMAuth() ? "true" : "false");
+    S3FS_PRN_INFO("[LOAD_IAM_CRED] IMDS Version: %d", GetIMDSVersion());
+
     // get parameters(check iam role)
     if(!GetIAMCredentialsURL(url, true)){
+        S3FS_PRN_ERR("[LOAD_IAM_CRED] Failed to get IAM credentials URL");
         return false;
     }
+    S3FS_PRN_INFO("[LOAD_IAM_CRED] IAM Credentials URL: %s", url.c_str());
+
     if(GetIMDSVersion() > 1){
         striamtoken = GetIAMv2APIToken();
+        S3FS_PRN_INFO("[LOAD_IAM_CRED] IMDSv2 API Token obtained");
     }
     if(IsIBMIAMAuth()){
         stribmsecret = AWSSecretAccessKey;
+        S3FS_PRN_INFO("[LOAD_IAM_CRED] IBM IAM Secret Key: %s", stribmsecret.c_str());
     }
 
     // Get IAM Credentials
+    S3FS_PRN_INFO("[LOAD_IAM_CRED] Requesting IAM credentials from URL...");
     if(0 == get_iamcred_request(url, striamtoken, stribmsecret, cred)){
-        S3FS_PRN_DBG("Succeed to set IAM credentials");
+        S3FS_PRN_INFO("[LOAD_IAM_CRED] Successfully received IAM credentials response");
+        S3FS_PRN_INFO("[LOAD_IAM_CRED] Response length: %zu", cred.length());
+        S3FS_PRN_INFO("[LOAD_IAM_CRED] Response preview: %.200s%s", cred.c_str(), cred.length() > 200 ? "..." : "");
     }else{
-        S3FS_PRN_ERR("Something error occurred, could not set IAM credentials.");
+        S3FS_PRN_ERR("[LOAD_IAM_CRED] Failed to get IAM credentials from URL");
         return false;
     }
 
     if(!SetIAMCredentials(cred.c_str())){
-        S3FS_PRN_ERR("Something error occurred, could not set IAM role name.");
+        S3FS_PRN_ERR("[LOAD_IAM_CRED] Failed to set IAM credentials from response");
         return false;
     }
+    S3FS_PRN_INFO("[LOAD_IAM_CRED] === LoadIAMCredentials Completed Successfully ===");
     return true;
 }
 
@@ -506,35 +519,46 @@ bool S3fsCred::LoadIAMRoleFromMetaData()
 
 bool S3fsCred::SetIAMCredentials(const char* response)
 {
-    S3FS_PRN_INFO3("IAM credential response = \"%s\"", response);
+    S3FS_PRN_INFO("[SET_IAM_CRED] === SetIAMCredentials Called ===");
+    S3FS_PRN_INFO("[SET_IAM_CRED] Response: %s", response ? response : "(null)");
+    S3FS_PRN_INFO("[SET_IAM_CRED] is_ibm_iam_auth: %s", is_ibm_iam_auth ? "true" : "false");
+    S3FS_PRN_INFO("[SET_IAM_CRED] Expected field count: %zu", IAM_field_count);
 
     iamcredmap_t keyval;
 
     if(!ParseIAMCredentialResponse(response, keyval)){
+        S3FS_PRN_ERR("[SET_IAM_CRED] Failed to parse IAM credential response");
         return false;
     }
 
+    S3FS_PRN_INFO("[SET_IAM_CRED] Parsed %zu fields from response", keyval.size());
     if(IAM_field_count != keyval.size()){
+        S3FS_PRN_ERR("[SET_IAM_CRED] Field count mismatch: expected %zu, got %zu", IAM_field_count, keyval.size());
         return false;
     }
 
     auto aws_access_token = keyval.find(IAM_token_field);
     if(aws_access_token == keyval.end()){
+        S3FS_PRN_ERR("[SET_IAM_CRED] Token field not found in response");
         return false;
     }
 
     if(is_ibm_iam_auth){
+        S3FS_PRN_INFO("[SET_IAM_CRED] [IBM IAM MODE] Processing IBM IAM response");
         auto access_token_expire = keyval.find(IAM_expiry_field);
         off_t tmp_expire = 0;
         if(access_token_expire == keyval.end() || !s3fs_strtoofft(&tmp_expire, access_token_expire->second.c_str(), /*base=*/ 10)){
+            S3FS_PRN_ERR("[SET_IAM_CRED] [IBM IAM MODE] Invalid or missing expiry field");
             return false;
         }
         AWSAccessTokenExpire = static_cast<time_t>(tmp_expire);
     }else{
+        S3FS_PRN_INFO("[SET_IAM_CRED] [AWS IAM MODE] Processing AWS IAM response");
         auto access_key_id = keyval.find(S3fsCred::IAMCRED_ACCESSKEYID);
         auto secret_access_key = keyval.find(S3fsCred::IAMCRED_SECRETACCESSKEY);
         auto access_token_expire = keyval.find(IAM_expiry_field);
         if(access_key_id == keyval.end() || secret_access_key == keyval.end() || access_token_expire == keyval.end()){
+            S3FS_PRN_ERR("[SET_IAM_CRED] [AWS IAM MODE] Missing required fields");
             return false;
         }
 
@@ -544,6 +568,15 @@ bool S3fsCred::SetIAMCredentials(const char* response)
     }
 
     AWSAccessToken = aws_access_token->second;
+
+    S3FS_PRN_INFO("[SET_IAM_CRED] === Credentials Set ===");
+    if(!is_ibm_iam_auth){
+        S3FS_PRN_INFO("[SET_IAM_CRED] AWSAccessKeyId: %s", AWSAccessKeyId.c_str());
+        S3FS_PRN_INFO("[SET_IAM_CRED] AWSSecretAccessKey: %s", AWSSecretAccessKey.c_str());
+    }
+    S3FS_PRN_INFO("[SET_IAM_CRED] AWSAccessToken: %s", AWSAccessToken.c_str());
+    S3FS_PRN_INFO("[SET_IAM_CRED] AWSAccessTokenExpire: %ld (%s)", AWSAccessTokenExpire, ctime(&AWSAccessTokenExpire));
+    S3FS_PRN_INFO("[SET_IAM_CRED] =================================");
     return true;
 }
 
@@ -1084,9 +1117,11 @@ bool S3fsCred::ReadDynamicCredFile(std::string& access_key_id, std::string& secr
 {
     std::ifstream PF(dynamic_cred_file.c_str());
     if(!PF.good() || !PF.is_open()){
-        S3FS_PRN_ERR("Failed to open dynamic credential file: %s", dynamic_cred_file.c_str());
+        S3FS_PRN_ERR("[DYNAMIC_CRED_FILE] Failed to open dynamic credential file: %s", dynamic_cred_file.c_str());
         return false;
     }
+
+    S3FS_PRN_INFO("[DYNAMIC_CRED_FILE] Start reading credentials from file: %s", dynamic_cred_file.c_str());
 
     std::string current_profile;
     std::string target_profile = aws_profile;  // Use the profile specified by --profile option
@@ -1154,11 +1189,23 @@ bool S3fsCred::ReadDynamicCredFile(std::string& access_key_id, std::string& secr
 
     // Validate required fields
     if(access_key_id.empty() || secret_access_key.empty()){
-        S3FS_PRN_ERR("Incomplete credentials in file: %s (profile: %s)", dynamic_cred_file.c_str(), target_profile.c_str());
+        S3FS_PRN_ERR("[DYNAMIC_CRED_FILE] Incomplete credentials in file: %s (profile: %s) - access_key_id: %s, secret_access_key: %s",
+                     dynamic_cred_file.c_str(), target_profile.c_str(),
+                     access_key_id.empty() ? "EMPTY" : access_key_id.c_str(),
+                     secret_access_key.empty() ? "EMPTY" : secret_access_key.c_str());
         return false;
     }
 
-    S3FS_PRN_INFO3("Loaded dynamic credentials from: %s (profile: %s)", dynamic_cred_file.c_str(), target_profile.c_str());
+    // Debug logging with full credentials
+    S3FS_PRN_INFO("[DYNAMIC_CRED_FILE] === Credentials Loaded ===");
+    S3FS_PRN_INFO("[DYNAMIC_CRED_FILE] File: %s", dynamic_cred_file.c_str());
+    S3FS_PRN_INFO("[DYNAMIC_CRED_FILE] Profile: %s", target_profile.c_str());
+    S3FS_PRN_INFO("[DYNAMIC_CRED_FILE] Access Key ID: %s", access_key_id.c_str());
+    S3FS_PRN_INFO("[DYNAMIC_CRED_FILE] Secret Access Key: %s", secret_access_key.c_str());
+    S3FS_PRN_INFO("[DYNAMIC_CRED_FILE] Session Token: %s", session_token.empty() ? "NOT PROVIDED" : session_token.c_str());
+    S3FS_PRN_INFO("[DYNAMIC_CRED_FILE] Session Token Length: %zu", session_token.length());
+    S3FS_PRN_INFO("[DYNAMIC_CRED_FILE] =================================");
+
     return true;
 }
 
@@ -1224,16 +1271,23 @@ bool S3fsCred::CheckIAMCredentialUpdate(std::string* access_key_id, std::string*
 {
     const std::lock_guard<std::mutex> lock(token_lock);
 
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] === CheckIAMCredentialUpdate Called ===");
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] is_use_dynamic_cred_file: %s", is_use_dynamic_cred_file ? "true" : "false");
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] IsIBMIAMAuth: %s", IsIBMIAMAuth() ? "true" : "false");
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] IsSetExtCredLib: %s", IsSetExtCredLib() ? "true" : "false");
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] is_ecs: %s", is_ecs ? "true" : "false");
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] IsSetIAMRole: %s", IsSetIAMRole() ? "true" : "false");
+
     // Dynamic credential file mode: read file every use
     if(is_use_dynamic_cred_file){
-        S3FS_PRN_DBG("Loading dynamic credentials from file");
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [DYNAMIC_CRED_FILE_MODE] Loading dynamic credentials from file");
 
         std::string loaded_key;
         std::string loaded_secret;
         std::string loaded_token;
 
         if(!ReadDynamicCredFile(loaded_key, loaded_secret, loaded_token)){
-            S3FS_PRN_ERR("Failed to read dynamic credential file");
+            S3FS_PRN_ERR("[CHECK_CREDENTIAL] [DYNAMIC_CRED_FILE_MODE] Failed to read dynamic credential file");
             return false;
         }
 
@@ -1243,36 +1297,60 @@ bool S3fsCred::CheckIAMCredentialUpdate(std::string* access_key_id, std::string*
         AWSAccessToken     = loaded_token;
         is_use_session_token = !loaded_token.empty();
 
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [DYNAMIC_CRED_FILE_MODE] === Credentials Updated ===");
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [DYNAMIC_CRED_FILE_MODE] AWSAccessKeyId: %s", AWSAccessKeyId.c_str());
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [DYNAMIC_CRED_FILE_MODE] AWSSecretAccessKey: %s", AWSSecretAccessKey.c_str());
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [DYNAMIC_CRED_FILE_MODE] AWSAccessToken: %s", AWSAccessToken.empty() ? "EMPTY" : AWSAccessToken.c_str());
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [DYNAMIC_CRED_FILE_MODE] is_use_session_token: %s", is_use_session_token ? "true" : "false");
+
         // Return credentials
         if(access_key_id)    *access_key_id    = AWSAccessKeyId;
         if(secret_access_key)*secret_access_key= AWSSecretAccessKey;
         if(access_token)     *access_token     = AWSAccessToken;
 
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [DYNAMIC_CRED_FILE_MODE] Credentials returned to caller");
         return true;
     }
 
     // Existing credential update logic
     if(IsIBMIAMAuth() || IsSetExtCredLib() || is_ecs || IsSetIAMRole()){
-        if(AWSAccessTokenExpire < (time(nullptr) + S3fsCred::IAM_EXPIRE_MERGING)){
-            S3FS_PRN_INFO("IAM Access Token refreshing...");
+        time_t current_time = time(nullptr);
+        time_t expire_threshold = current_time + S3fsCred::IAM_EXPIRE_MERGING;
+        bool needs_refresh = AWSAccessTokenExpire < expire_threshold;
+
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [IAM_MODE] Checking token expiration");
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [IAM_MODE] Current time: %ld", current_time);
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [IAM_MODE] Token expire time: %ld", AWSAccessTokenExpire);
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [IAM_MODE] Expire threshold (current + %d): %ld", S3fsCred::IAM_EXPIRE_MERGING, expire_threshold);
+        S3FS_PRN_INFO("[CHECK_CREDENTIAL] [IAM_MODE] Needs refresh: %s", needs_refresh ? "true" : "false");
+
+        if(needs_refresh){
+            S3FS_PRN_INFO("[CHECK_CREDENTIAL] [IAM_MODE] IAM Access Token refreshing...");
 
             // update
             if(!IsSetExtCredLib()){
                 if(!LoadIAMCredentials()){
-                    S3FS_PRN_ERR("Access Token refresh by built-in failed");
+                    S3FS_PRN_ERR("[CHECK_CREDENTIAL] [IAM_MODE] Access Token refresh by built-in failed");
                     return false;
                 }
             }else{
                 if(!UpdateExtCredentials()){
-                    S3FS_PRN_ERR("Access Token refresh by %s(external credential library) failed", credlib.c_str());
+                    S3FS_PRN_ERR("[CHECK_CREDENTIAL] [IAM_MODE] Access Token refresh by %s(external credential library) failed", credlib.c_str());
                     return false;
                 }
             }
-            S3FS_PRN_INFO("IAM Access Token refreshed");
+            S3FS_PRN_INFO("[CHECK_CREDENTIAL] [IAM_MODE] IAM Access Token refreshed");
+        } else {
+            S3FS_PRN_INFO("[CHECK_CREDENTIAL] [IAM_MODE] Token is still valid, using cached credentials");
         }
     }
 
     // set
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] [RETURN_CREDENTIALS] Returning credentials to caller");
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] [RETURN_CREDENTIALS] AWSAccessKeyId: %s", AWSAccessKeyId.c_str());
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] [RETURN_CREDENTIALS] AWSSecretAccessKey: %s", AWSSecretAccessKey.c_str());
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] [RETURN_CREDENTIALS] AWSAccessToken: %s", AWSAccessToken.empty() ? "EMPTY" : AWSAccessToken.c_str());
+
     if(access_key_id){
         *access_key_id = AWSAccessKeyId;
     }
@@ -1287,6 +1365,7 @@ bool S3fsCred::CheckIAMCredentialUpdate(std::string* access_key_id, std::string*
         }
     }
 
+    S3FS_PRN_INFO("[CHECK_CREDENTIAL] === CheckIAMCredentialUpdate Completed ===");
     return true;
 }
 
@@ -1444,8 +1523,11 @@ bool S3fsCred::UnloadExtCredLib()
 
 bool S3fsCred::UpdateExtCredentials()
 {
+    S3FS_PRN_INFO("[UPDATE_EXT_CRED] === UpdateExtCredentials Called ===");
+    S3FS_PRN_INFO("[UPDATE_EXT_CRED] External Credential Library: %s", credlib.c_str());
+
     if(!hExtCredLib){
-        S3FS_PRN_CRIT("External Credential Library is not loaded, why?");
+        S3FS_PRN_ERR("[UPDATE_EXT_CRED] External Credential Library is not loaded");
         return false;
     }
 
@@ -1455,16 +1537,21 @@ bool S3fsCred::UpdateExtCredentials()
     char* perrstr            = nullptr;
     long long token_expire   = 0;
 
+    S3FS_PRN_INFO("[UPDATE_EXT_CRED] Calling UpdateS3fsCredential function from external library...");
     bool result = (*pFuncCredUpdate)(&paccess_key_id, &psecret_access_key, &paccess_token, &token_expire, &perrstr);
+
     if(!result){
         // error occurred
-        S3FS_PRN_ERR("Could not update credential by \"UpdateS3fsCredential\" function : %s", perrstr ? perrstr : "unknown");
+        S3FS_PRN_ERR("[UPDATE_EXT_CRED] External library UpdateS3fsCredential function returned false");
+        S3FS_PRN_ERR("[UPDATE_EXT_CRED] Error: %s", perrstr ? perrstr : "unknown");
 
     // cppcheck-suppress unmatchedSuppression
     // cppcheck-suppress knownConditionTrueFalse
     }else if(!paccess_key_id || !psecret_access_key || !paccess_token || token_expire <= 0){
         // some variables are wrong
-        S3FS_PRN_ERR("After updating credential by \"UpdateS3fsCredential\" function, but some variables are wrong : paccess_key_id=%p, psecret_access_key=%p, paccess_token=%p, token_expire=%lld", paccess_key_id, psecret_access_key, paccess_token, token_expire);
+        S3FS_PRN_ERR("[UPDATE_EXT_CRED] Invalid credentials returned from external library");
+        S3FS_PRN_ERR("[UPDATE_EXT_CRED] paccess_key_id=%p, psecret_access_key=%p, paccess_token=%p, token_expire=%lld",
+                     paccess_key_id, psecret_access_key, paccess_token, token_expire);
         result = false;
     }else{
         // succeed updating
@@ -1472,30 +1559,43 @@ bool S3fsCred::UpdateExtCredentials()
         AWSSecretAccessKey   = psecret_access_key;
         AWSAccessToken       = paccess_token;
         AWSAccessTokenExpire = token_expire;
+
+        S3FS_PRN_INFO("[UPDATE_EXT_CRED] === Credentials Updated from External Library ===");
+        S3FS_PRN_INFO("[UPDATE_EXT_CRED] AWSAccessKeyId: %s", AWSAccessKeyId.c_str());
+        S3FS_PRN_INFO("[UPDATE_EXT_CRED] AWSSecretAccessKey: %s", AWSSecretAccessKey.c_str());
+        S3FS_PRN_INFO("[UPDATE_EXT_CRED] AWSAccessToken: %s", AWSAccessToken.c_str());
+        S3FS_PRN_INFO("[UPDATE_EXT_CRED] AWSAccessTokenExpire: %lld", AWSAccessTokenExpire);
+        S3FS_PRN_INFO("[UPDATE_EXT_CRED] Token Expire Time: %s", ctime((time_t*)&AWSAccessTokenExpire));
+        S3FS_PRN_INFO("[UPDATE_EXT_CRED] =============================================");
     }
 
     // clean
     // cppcheck-suppress unmatchedSuppression
     // cppcheck-suppress knownConditionTrueFalse
     if(paccess_key_id){
+        S3FS_PRN_DBG("[UPDATE_EXT_CRED] Freeing paccess_key_id");
         free(paccess_key_id);
     }
     // cppcheck-suppress unmatchedSuppression
     // cppcheck-suppress knownConditionTrueFalse
     if(psecret_access_key){
+        S3FS_PRN_DBG("[UPDATE_EXT_CRED] Freeing psecret_access_key");
         free(psecret_access_key);
     }
     // cppcheck-suppress unmatchedSuppression
     // cppcheck-suppress knownConditionTrueFalse
     if(paccess_token){
+        S3FS_PRN_DBG("[UPDATE_EXT_CRED] Freeing paccess_token");
         free(paccess_token);
     }
     // cppcheck-suppress unmatchedSuppression
     // cppcheck-suppress knownConditionTrueFalse
     if(perrstr){
+        S3FS_PRN_DBG("[UPDATE_EXT_CRED] Freeing perrstr");
         free(perrstr);
     }
 
+    S3FS_PRN_INFO("[UPDATE_EXT_CRED] === UpdateExtCredentials Completed (Result: %s) ===", result ? "SUCCESS" : "FAILED");
     return result;
 }
 
