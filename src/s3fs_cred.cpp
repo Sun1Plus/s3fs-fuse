@@ -1791,7 +1791,7 @@ bool S3fsCred::CheckAllParams()
         return false;
     }
 
-    if(!S3fsCurl::IsPublicBucket() && !load_iamrole && !is_ecs && !IsSetExtCredLib()){
+    if(!S3fsCurl::IsPublicBucket() && !load_iamrole && !is_ecs && !IsSetExtCredLib() && !is_use_dynamic_cred_file){
         if(!InitialS3fsCredentials()){
             return false;
         }
@@ -1800,7 +1800,7 @@ bool S3fsCred::CheckAllParams()
             return false;
         }
         // More error checking on the access key pair can be done
-        // like checking for appropriate lengths and characters  
+        // like checking for appropriate lengths and characters
     }
 
     // check IBM IAM requirements
