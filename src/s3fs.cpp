@@ -4801,13 +4801,13 @@ static int s3fs_check_service()
         }
     }
 
-    // make sure remote mountpath exists and is a directory
-    if(!mount_prefix.empty()){
-        if(remote_mountpath_exists("/", support_compat_dir) != 0){
-            S3FS_PRN_CRIT("Remote mountpath %s not found, this may be resolved with the compat_dir option.", mount_prefix.c_str());
-            return EXIT_FAILURE;
-        }
-    }
+    // // make sure remote mountpath exists and is a directory
+    // if(!mount_prefix.empty()){
+    //     if(remote_mountpath_exists("/", support_compat_dir) != 0){
+    //         S3FS_PRN_CRIT("Remote mountpath %s not found, this may be resolved with the compat_dir option.", mount_prefix.c_str());
+    //         return EXIT_FAILURE;
+    //     }
+    // }
 
     return EXIT_SUCCESS;
 }
