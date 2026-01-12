@@ -4808,6 +4808,7 @@ static int s3fs_check_service()
     //         return EXIT_FAILURE;
     //     }
     // }
+    S3FS_PRN_INFO("check services success.");
 
     return EXIT_SUCCESS;
 }
